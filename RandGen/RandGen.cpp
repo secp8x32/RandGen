@@ -5,6 +5,11 @@
 #include <openssl/ec.h>
 #include <openssl/bn.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
+#include "uint256.h"
+
+void RandAddSeed(bool fPerfmon = false);
+__int64 GetTime();
 
 int main(int argc, char** argv)
 {
@@ -15,6 +20,12 @@ int main(int argc, char** argv)
 	}
 	size_t total_keys = atoll(argv[1]);
 	const char* out_file = argv[2];
+
+	// Seed random number generator with screen scrape and other hardware sources
+	RAND_screen();
+
+	// Seed random number generator with perfmon data
+	RandAddSeed(true);
 
 	BN_CTX* bn_ctx = BN_CTX_new();
 	BIGNUM* curve_order = BN_new();
@@ -46,4 +57,42 @@ int main(int argc, char** argv)
 	BN_free(curve_order);
 	BN_free(priv_key);
 	return 0;
+}
+
+
+void RandAddSeed(bool fPerfmon)
+{
+	// Seed with CPU performance counter
+	LARGE_INTEGER PerformanceCount;
+	QueryPerformanceCounter(&PerformanceCount);
+	RAND_add(&PerformanceCount, sizeof(PerformanceCount), 1.5);
+	memset(&PerformanceCount, 0, sizeof(PerformanceCount));
+
+	static __int64 nLastPerfmon;
+	if (fPerfmon || GetTime() > nLastPerfmon + 5 * 60)
+	{
+		nLastPerfmon = GetTime();
+
+		// Seed with the entire set of perfmon data
+		unsigned char pdata[250000];
+		memset(pdata, 0, sizeof(pdata));
+		unsigned long nSize = sizeof(pdata);
+		long ret = RegQueryValueEx(HKEY_PERFORMANCE_DATA, L"Global", NULL, NULL, pdata, &nSize);
+		RegCloseKey(HKEY_PERFORMANCE_DATA);
+		if (ret == ERROR_SUCCESS)
+		{
+			uint256 hash;
+			SHA256(pdata, nSize, (unsigned char*)&hash);
+			RAND_add(&hash, sizeof(hash), min(nSize / 500.0, (double)sizeof(hash)));
+			hash = 0;
+			memset(pdata, 0, nSize);
+			printf("RandAddSeed() got %d bytes of performance data\n", nSize);
+		}
+	}
+}
+
+
+__int64 GetTime()
+{
+	return time(NULL);
 }
